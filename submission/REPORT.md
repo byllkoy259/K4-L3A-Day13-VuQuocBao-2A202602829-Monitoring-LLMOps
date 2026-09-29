@@ -8,7 +8,7 @@
 - **MSSV:** 2A202602829
 - **Lớp:** K4-L3A
 - **Repository URL:** https://github.com/byllkoy259/K4-L3A-Day13-VuQuocBao-2A202602829-Monitoring-LLMOps
-- **Commit SHA cuối:**
+- **Commit SHA cuối:** 92b87fd (HEAD -> main, origin/main, origin/HEAD) Checkpoint 3
 - **Challenge ID:** `day13-k4-l3a-monitoring-llmops-v1`
 - **Tên project Langfuse cá nhân:** `day13-k4-l3a-2a202602829`
 
@@ -238,19 +238,41 @@ Bằng chứng phân tách: TTFT = 50 ms (unchanged) chứng minh LLM không b�
 ## 8. Giải thích và tự đánh giá
 
 - **Một quyết định kỹ thuật quan trọng và lý do:**
+  Đặt `scrub_event` processor vào chuỗi structlog **trước** `JsonlFileProcessor` và `JSONRenderer` thay vì gọi `scrub_text` thủ công trong từng log call. Lý do: xử lý tập trung tại một chỗ đảm bảo không bỏ sót field nào (kể cả `detail` của exception hay các field lồng nhau trong `payload`), và không cần sửa mỗi lần thêm field log mới. Nếu đặt sau renderer thì PII đã nằm trong chuỗi JSON rồi, việc regex trên chuỗi đã serialize rất dễ bỏ sót (ví dụ ký tự escape).
+
 - **Một lỗi/blocker đã gặp:**
+  CCCD pattern ban đầu bắt được cả `user_id_hash` 12 chữ số (SHA-256 cắt ngắn) vì hash có thể toàn chữ số. Validator báo PII leak trên chính field `correlation_id` và `user_id_hash`.
+
 - **Cách tìm nguyên nhân và xử lý:**
+  Thêm `print` tạm vào `scrub_event` để in ra field nào đang bị match, phát hiện `user_id_hash` bị nhầm là CCCD. Fix bằng cách thêm danh sách `SKIP_FIELDS = {"ts", "level", "correlation_id", "user_id_hash"}` vào `scrub_event` — các field do app tự sinh (không từ user input) được bỏ qua khi scan PII.
+
 - **Cách hiểu luồng Metrics → Logs → Traces:**
-- **Vai trò của prompt version, token/cost, SLO hoặc rollback trong vận hành LLM:**
+  Ba tín hiệu bổ sung cho nhau theo thứ tự điều tra:
+  1. **Metrics** (dashboard `/metrics` hoặc `logs.jsonl`) cho biết *triệu chứng* và *khoảng thời gian*: P95 latency tăng đột biến từ 1 426 ms lên 3 750 ms sau 09:25:18Z.
+  2. **Logs** (structured JSONL) cho biết *request nào* bị ảnh hưởng: filter theo `latency_ms > 2000` ra 5 `correlation_id`. Log cũng tiết lộ `ttft_ms = 50` không đổi — tín hiệu chỉ hướng vào retrieval, không phải LLM.
+  3. **Traces** (Langfuse) cho biết *bước nào* là thủ phạm: mở trace `68b1fca7...` thấy span `retrieval` dài 2 504 ms, span `llm-generate` chỉ 153 ms. Không có traces thì chỉ biết request chậm, không biết chậm ở đâu trong pipeline.
+
+- **Vai trò của prompt version, token/cost, SLO và rollback trong vận hành LLM:**
+  - **Prompt version**: cách duy nhất để thay đổi hành vi LLM có thể kiểm soát được (audit trail, rollback). Thay đổi prompt mà không có version control giống deploy code không có git.
+  - **Token/cost**: chi phí tỉ lệ thuận với output token; `cost_spike` incident tăng token 4× dẫn đến cost tăng 4×. Monitoring cost/request phát hiện model hallucinate output dài bất thường.
+  - **SLO + error budget**: định lượng được "bao nhiêu sự cố là chấp nhận được" thay vì target "không bao giờ chậm". Với `rag_slow`, 5/10 request vượt 3 000 ms = burn rate 5× → alert sẽ bắn sau 5 phút.
+  - **Rollback**: khi `production` label được promote sang v2 và quality giảm, `promote 1` quay lại v2 trong vài giây mà không cần deploy lại code — điều không thể làm nếu prompt hard-code.
+
 - **Điều quan trọng nhất đã học:**
-- **Hạn chế hoặc phần chưa hoàn thành, nếu có:**
+  TTFT (Time To First Token) là tín hiệu phân tách cực kỳ hữu ích: nếu TTFT bình thường mà total latency tăng → vấn đề nằm ở retrieval/preprocessing. Nếu cả TTFT lẫn total latency đều tăng → vấn đề ở LLM inference. Không có TTFT thì hai trường hợp này trông giống hệt nhau trên dashboard end-to-end.
+
+- **Hạn chế hoặc phần chưa hoàn thành:**
+  - Dashboard là HTML tĩnh (`build_dashboard.py`), không real-time; phải chạy lại script mỗi lần muốn refresh dữ liệu mới. Không tích hợp được auto-alert thật (Slack webhook chưa cấu hình).
+  - Chưa có rule PII cho địa chỉ nhà và tên người (NLP-based, phức tạp hơn regex).
+  - `validate_logs.py` chỉ chấm điểm, không tự động fix log cũ; phải xóa/đổi tên file log trước khi đo lại — dễ quên dẫn đến điểm thấp hơn thực tế.
 
 ## 9. Checklist trước khi nộp
 
-- [ ] Kết quả và evidence thuộc commit SHA cuối.
-- [ ] Tất cả ảnh/output mở được bằng đường dẫn tương đối.
-- [ ] Incident evidence nối đúng metric → log → trace.
-- [ ] Trace/prompt evidence thuộc project Langfuse cá nhân và ảnh không lộ key/secret.
-- [ ] Repository chạy lại được theo README.
-- [ ] Không có secret, API key, PII thô hoặc evidence của người khác/lớp khác.
-- [ ] URL repo và commit SHA cuối đã được nộp trên LMS/Codelabs.
+- [x] Kết quả và evidence thuộc commit SHA cuối (`92b87fd`).
+- [x] Tất cả ảnh/output mở được bằng đường dẫn tương đối (`evidence/xx-*.png` / `.txt`).
+- [x] Incident evidence nối đúng metric → log → trace: `12-incident-metric.txt` → `13-incident-log.txt` → `14-incident-trace.png` cùng `correlation_id = req-c12a33ea`.
+- [x] Trace/prompt evidence thuộc project Langfuse cá nhân `day13-k4-l3a-2a202602829`; ảnh không lộ key/secret.
+- [x] Repository cài đặt và chạy lại được theo README (`uvicorn app.main:app --reload --env-file .env`).
+- [x] Không có secret, API key, PII thô hoặc evidence của người khác/lớp khác (`.env` trong `.gitignore`, `config/challenge.json` trong `.gitignore`).
+- [x] URL repo và commit SHA cuối đã được nộp trên LMS/Codelabs.
+
