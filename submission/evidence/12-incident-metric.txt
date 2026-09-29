@@ -1,0 +1,35 @@
+﻿=== CP3 INCIDENT EVIDENCE: Challenge day13-k4-l3a-monitoring-llmops-v1 ===
+Run: 2026-09-29T09:44Z | Incident: rag_slow | Feature: monitoring
+
+METRICS SNAPSHOT (from /metrics after challenge):
+  traffic          : 5
+  latency_p50      : 2659 ms   <-- ANOMALY (normal ~155ms)
+  latency_p95      : 3750 ms   <-- EXCEEDS latency_threshold_ms=2000
+  latency_p99      : 3750 ms
+  ttft_p95         : 51 ms     <-- UNCHANGED (LLM not affected)
+  avg_cost_usd     : 0.0023
+  error_breakdown  : {} (no HTTP errors)
+  quality_avg      : 0.84
+
+KEY SIGNAL: TTFT=51ms vs total latency P50=2659ms
+  => ~2500ms added BEFORE LLM first token
+  => Root cause: retrieval span (vector store delay)
+
+AFFECTED REQUESTS (all 5 challenge queries):
+  req-c12a33ea | 3750ms | ttft=50ms | 09:44:44Z | session k4-l3a-challenge-s02
+  req-22c1e190 | 2659ms | ttft=50ms | 09:44:47Z | session k4-l3a-challenge-s04
+  req-c8a95a77 | 2659ms | ttft=50ms | 09:44:49Z | session k4-l3a-challenge-s01
+  req-3ae188d6 | 2659ms | ttft=51ms | 09:44:52Z | session k4-l3a-challenge-s05
+  req-7052c66a | 2658ms | ttft=50ms | 09:44:55Z | session k4-l3a-challenge-s03
+
+ROOT CAUSE: rag_slow flag set STATE["rag_slow"]=True
+  -> mock_rag.retrieve() executes time.sleep(2.5)
+  -> Every request spends ~2500ms in retrieval span
+  -> TTFT unchanged proves LLM is NOT the bottleneck
+
+METRIC->LOG->TRACE chain:
+  1. METRIC: latency_p50=2659ms vs normal 155ms (17x spike)
+  2. LOG: req-c12a33ea shows latency_ms=3750, ttft_ms=50 (divergence = retrieval)
+  3. TRACE: Langfuse trace for req-c12a33ea shows retrieval span ~3500ms, llm-generate span ~155ms
+
+RESOLUTION: POST /incidents/rag_slow/disable

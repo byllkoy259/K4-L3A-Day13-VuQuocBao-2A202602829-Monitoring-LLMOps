@@ -1,0 +1,50 @@
+﻿=== CP3 TRACE EVIDENCE — Challenge day13-k4-l3a-monitoring-llmops-v1 ===
+Incident: rag_slow | Feature: monitoring | Run: 2026-09-29T09:44Z
+
+TRACES FROM LANGFUSE (2nd challenge run — definitive evidence):
+
+Trace: 68b1fca71c23a3874e84dcc22622ac89  ← correlation_id: req-c12a33ea
+  startTime: 2026-09-29T09:44:40.749Z
+  retrieval span : 2504 ms  <<< SLOW (normal ~3ms)
+  llm-generate   :  153 ms  <<< NORMAL (unchanged)
+
+Trace: 7903fb775eaf06294222f248bac98724  ← correlation_id: req-22c1e190
+  startTime: 2026-09-29T09:44:44.515Z
+  retrieval span : 2503 ms
+  llm-generate   :  154 ms
+
+Trace: d4421220be84a9490748b9cb99a9cc47  ← correlation_id: req-c8a95a77
+  startTime: 2026-09-29T09:44:47.183Z
+  retrieval span : 2502 ms
+  llm-generate   :  156 ms
+
+Trace: cdf0766455675863a2239c4e8e5be33c  ← correlation_id: req-3ae188d6
+  startTime: 2026-09-29T09:44:49.852Z
+  retrieval span : 2502 ms
+  llm-generate   :  156 ms
+
+Trace: 6f5aca2e1b00d74315e62ca017c3728f  ← correlation_id: req-7052c66a
+  startTime: 2026-09-29T09:44:52.521Z
+  retrieval span : 2506 ms
+  llm-generate   :  151 ms
+
+NORMAL TRACES (pre-incident, same server instance for comparison):
+  68f69b16982134f64583a94dcd350438  retrieval=0ms  llm=157ms  (08:57:00Z)
+  2dc3bc6fa6ab66c1a7847f16da97abf2  retrieval=4ms  llm=154ms  (08:56:59Z)
+  5e816ac899e0559e897e1efe14cf7d41  retrieval=4ms  llm=154ms  (08:56:59Z)
+
+ANALYSIS:
+  Incident retrieval avg : 2503 ms
+  Normal retrieval avg   :    3 ms
+  Ratio                  :  834x slower
+  
+  LLM generate avg (incident) : 154 ms
+  LLM generate avg (normal)   : 155 ms
+  → LLM completely unaffected
+
+CONCLUSION:
+  100% of incident latency came from the retrieval span.
+  Root cause: vector store (mock_rag.retrieve) sleeping 2.5s when rag_slow=True.
+  
+LANGFUSE URL (example trace waterfall):
+  https://cloud.langfuse.com/project/<project-id>/traces/68b1fca71c23a3874e84dcc22622ac89

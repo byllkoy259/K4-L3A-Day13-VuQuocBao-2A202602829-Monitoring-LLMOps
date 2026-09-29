@@ -9,7 +9,7 @@
 - **Lớp:** K4-L3A
 - **Repository URL:** https://github.com/byllkoy259/K4-L3A-Day13-VuQuocBao-2A202602829-Monitoring-LLMOps
 - **Commit SHA cuối:**
-- **Challenge ID:**
+- **Challenge ID:** `day13-k4-l3a-monitoring-llmops-v1`
 - **Tên project Langfuse cá nhân:** `day13-k4-l3a-2a202602829`
 
 ## 2. Evidence index
@@ -136,14 +136,104 @@
 
 ## 7. Điều tra challenge
 
-- **Challenge ID:**
-- **Khoảng thời gian điều tra:**
-- **Triệu chứng từ metrics:**
-- **Log line và correlation ID liên quan:**
-- **Trace ID và span gây ảnh hưởng:**
-- **Root cause:**
-- **Fix action:**
+- **Challenge ID:** `day13-k4-l3a-monitoring-llmops-v1`
+- **Cohort / Affected feature:** K4 / `monitoring`
+- **Incident injected:** `rag_slow` (enabled lúc `2026-09-29T09:25:18Z` bằng `inject_incident.py`)
+- **Khoảng thời gian điều tra:** `2026-09-29T09:25:18Z` – `2026-09-29T09:25:39Z` (5 request challenge)
+
+### Bước 1 – Triệu chứng từ metrics / dashboard
+
+So sánh trước và sau khi bật incident (nguồn: `data/logs.jsonl`):
+
+| Metric | Normal (93 req) | Incident (5 req) | Biến đổi |
+|---|---|---|---|
+| Latency P50 | 155 ms | 2 655 ms | **+17×** |
+| Latency P95 | 1 426 ms | 2 657 ms | **+87%** — vượt `latency_threshold_ms=2000` |
+| TTFT avg | 50 ms | 50 ms | **Không đổi** ← chìa khóa điều tra |
+| Error rate | 0% | 0% | Không đổi |
+| Retrieval success (`tool_success`) | 100% | 100% | Không đổi |
+
+> **Quan sát then chốt:** TTFT giữ nguyên 50 ms trong khi tổng latency tăng lên ~2 655 ms → delay ~2 500 ms xảy ra **trước** bước LLM, tức là trong span `retrieval`.
+
+Evidence: `evidence/12-incident-metric.txt`
+
+### Bước 2 – Log line và correlation ID liên quan
+
+Tất cả 5 request challenge đều bị ảnh hưởng (lần chạy thứ 2, `2026-09-29T09:44Z`). Lấy một request bất thường:
+
+```
+ts: 2026-09-29T09:44:44.504205Z
+event: request_received
+correlation_id: req-c12a33ea
+feature: monitoring
+session_id: k4-l3a-challenge-s02
+message_preview: "How should an engineer investigate tail latency?"
+
+ts: 2026-09-29T09:44:44.504205Z → +3750ms
+event: response_sent
+correlation_id: req-c12a33ea
+latency_ms: 3750
+ttft_ms: 50          ← TTFT bình thường, total latency bất thường
+tool_name: retrieval
+tool_success: true   ← Không có lỗi HTTP, chỉ bị chậm
+```
+
+Danh sách đầy đủ (lần chạy thứ 2 — dùng làm evidence chính):
+
+| correlation_id | latency_ms | ttft_ms | session |
+|---|---|---|---|
+| `req-c12a33ea` | 3 750 ms | 50 ms | k4-l3a-challenge-s02 |
+| `req-22c1e190` | 2 659 ms | 50 ms | k4-l3a-challenge-s04 |
+| `req-c8a95a77` | 2 659 ms | 50 ms | k4-l3a-challenge-s01 |
+| `req-3ae188d6` | 2 659 ms | 51 ms | k4-l3a-challenge-s05 |
+| `req-7052c66a` | 2 658 ms | 50 ms | k4-l3a-challenge-s03 |
+
+Tất cả đều vượt `latency_threshold_ms=2000` và có `ttft_ms ≈ 50 ms` — TTFT không đổi so với baseline.
+
+Evidence: `evidence/13-incident-log.txt`
+
+### Bước 3 – Trace ID và span gây ảnh hưởng
+
+Trace được tạo bằng Langfuse SDK trong `app/agent.py`. Mỗi request có `metadata.correlation_id` khớp với log. Span timings từ Langfuse v2 API (`/api/public/v2/observations`):
+
+| Trace ID | correlation_id | retrieval span | llm-generate span |
+|---|---|---|---|
+| `68b1fca71c23a3874e84dcc22622ac89` | `req-c12a33ea` | **2 504 ms** | 153 ms |
+| `7903fb775eaf06294222f248bac98724` | `req-22c1e190` | **2 503 ms** | 154 ms |
+| `d4421220be84a9490748b9cb99a9cc47` | `req-c8a95a77` | **2 502 ms** | 156 ms |
+| `cdf0766455675863a2239c4e8e5be33c` | `req-3ae188d6` | **2 502 ms** | 156 ms |
+| `6f5aca2e1b00d74315e62ca017c3728f` | `req-7052c66a` | **2 506 ms** | 151 ms |
+
+So sánh với pre-incident traces (cùng server):
+
+| Trace ID | retrieval span | llm-generate span |
+|---|---|---|
+| `68f69b16982134f64583a94dcd350438` | **0 ms** | 157 ms |
+| `2dc3bc6fa6ab66c1a7847f16da97abf2` | **4 ms** | 154 ms |
+
+> **Span `retrieval` tăng 834× (từ ~3 ms lên 2 503 ms). Span `llm-generate` không đổi (~154 ms).** → Span `retrieval` là span thủ phạm 100%.
+
+Để xem trace waterfall: Langfuse → project `day13-k4-l3a-2A202602829` → trace `68b1fca71c23a3874e84dcc22622ac89` → filter metadata `correlation_id = req-c12a33ea`.
+
+Evidence: `evidence/14-incident-trace.txt` *(chụp ảnh waterfall từ Langfuse UI và lưu vào `evidence/14-incident-trace.png`)*
+
+### Bước 4 – Root cause
+
+**Root cause:** Span `retrieval` trong `mock_rag.retrieve()` bị thêm `time.sleep(2.5)` khi flag `STATE["rag_slow"] == True`. Điều này mô phỏng vector store bị quá tải / timeout. Vì bước retrieval block toàn bộ luồng đồng bộ, mỗi request feature `monitoring` phải chờ thêm 2 500 ms trước khi gọi LLM.
+
+Bằng chứng phân tách: TTFT = 50 ms (unchanged) chứng minh LLM không bị ảnh hưởng; delay hoàn toàn nằm trong span `retrieval`.
+
+### Bước 5 – Fix action và preventive measure
+
+- **Fix action tức thì:**
+  1. Disable incident: `POST /incidents/rag_slow/disable` (hoặc `python scripts/inject_incident.py --disable`)
+  2. Trong production: restart hoặc scale vector store pod; xả connection pool của retrieval client.
+
 - **Preventive measure:**
+  1. Thêm timeout/circuit breaker cho retrieval span (ví dụ ≤ 1 000 ms); nếu vượt timeout, trả fallback docs thay vì chờ.
+  2. Tách alert riêng cho retrieval latency (`retrieval_span_p95 > 500 ms for 2 min`) để phân biệt với LLM slowness.
+  3. Monitor span `retrieval` trên Langfuse độc lập với end-to-end latency — khi P95 retrieval tăng nhưng TTFT không đổi, ngay lập tức nghi vector store.
+  4. Health check định kỳ ping vector store; đưa kết quả vào `/health` endpoint.
 
 ## 8. Giải thích và tự đánh giá
 
