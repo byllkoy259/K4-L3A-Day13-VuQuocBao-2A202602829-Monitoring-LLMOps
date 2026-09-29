@@ -5,9 +5,17 @@ primary_slo:
   sli:
     good_event: 'event == "response_sent" and latency_ms <= 3000'
     total_event: 'event == "request_received"'
-  target_percent: 99.5
-  error_budget_percent: 0.5
-  note: Học viên phải giải thích hoặc điều chỉnh ngưỡng bằng baseline của mình.
+  # Điều chỉnh từ 99.5 xuống 99.0 dựa trên baseline của tôi (xem docs/alerts.md và REPORT.md mục 6):
+  # P50 ~0.4s, P95 ~1.5s, nhưng request đầu tiên sau khi khởi động (cold start) mất tới ~3.7s,
+  # và fake LLM chỉ chạy trên một tiến trình đơn lẻ. Ngưỡng 3000ms vẫn giữ nguyên để khớp
+  # threshold P95 trong config/dashboard.yaml.
+  target_percent: 99.0
+  error_budget_percent: 1.0
+  # Error budget = 100 - target = 1.0% số request. Ví dụ với 10.000 request trong 28 ngày,
+  # tối đa 100 request được phép lỗi hoặc chậm hơn 3000ms.
+  # burn_rate = (tỉ lệ request xấu trong cửa sổ) / error_budget_percent; burn_rate > 1 nghĩa là
+  # đang tiêu budget nhanh hơn mức cho phép.
+  note: Ngưỡng và target được giải thích/điều chỉnh bằng baseline cá nhân.
 guardrails:
   error_rate_pct_max: 2
   daily_cost_usd_max: 2.5

@@ -1,25 +1,31 @@
 alerts:
-  - name: TODO_alert_1
-    severity: TODO
-    condition: TODO
-    duration: TODO
+  - name: high_latency_p95
+    severity: P2
+    condition: 'percentile(latency_ms, 95) over event == "response_sent" > 3000'
+    duration: 5m
     type: symptom-based
     channel: slack
-    owner: TODO
+    slack_channel: "#day13-alerts"
+    owner: vu-quoc-bao (on-call)
+    slo: fast_successful_requests
     runbook: docs/alerts.md#alert-1
-  - name: TODO_alert_2
-    severity: TODO
-    condition: TODO
-    duration: TODO
+  - name: high_error_rate
+    severity: P1
+    condition: 'count(event == "request_failed") / count(event == "request_received") * 100 > 2'
+    duration: 5m
     type: symptom-based
     channel: slack
-    owner: TODO
+    slack_channel: "#day13-alerts"
+    owner: vu-quoc-bao (on-call)
+    slo: fast_successful_requests
     runbook: docs/alerts.md#alert-2
-  - name: TODO_alert_3
-    severity: TODO
-    condition: TODO
-    duration: TODO
+  - name: cost_per_request_spike
+    severity: P2
+    condition: 'mean(cost_usd) over event == "response_sent" > 0.005'
+    duration: 10m
     type: symptom-based
     channel: slack
-    owner: TODO
+    slack_channel: "#day13-alerts"
+    owner: vu-quoc-bao (on-call)
+    slo: guardrail_daily_cost_usd_max
     runbook: docs/alerts.md#alert-3
