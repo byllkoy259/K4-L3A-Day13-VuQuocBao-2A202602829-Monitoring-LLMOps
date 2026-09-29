@@ -143,15 +143,19 @@ def main() -> int:
     configure_utf8_stdio()
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=int, default=None, help="mặc định lấy time_range_minutes trong dashboard.yaml")
+    ap.add_argument("--end", default=None, help="mốc kết thúc cửa sổ (ISO, UTC), ví dụ 2026-09-29T09:50; mặc định là bây giờ")
     ap.add_argument("--out", type=Path, default=REPO_ROOT / "data" / "dashboard.html")
     ap.add_argument("--logs", type=Path, default=REPO_ROOT / "data" / "logs.jsonl")
     a = ap.parse_args()
 
     cfg = yaml.safe_load((REPO_ROOT / "config" / "dashboard.yaml").read_text(encoding="utf-8"))["dashboard"]
     minutes = a.minutes or cfg["time_range_minutes"]
-    end = datetime.now(timezone.utc).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    if a.end:
+        end = datetime.fromisoformat(a.end).replace(tzinfo=timezone.utc)
+    else:
+        end = datetime.now(timezone.utc).replace(second=0, microsecond=0) + timedelta(minutes=1)
     start = end - timedelta(minutes=minutes)
-    rows = load_logs(a.logs, start)
+    rows = [r for r in load_logs(a.logs, start) if r["_t"] < end]
     sent = bucket(rows, start, minutes, "response_sent")
     recv = bucket(rows, start, minutes, "request_received")
     failed = bucket(rows, start, minutes, "request_failed")

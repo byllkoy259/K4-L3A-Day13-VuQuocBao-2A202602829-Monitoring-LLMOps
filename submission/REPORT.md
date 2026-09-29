@@ -8,7 +8,7 @@
 - **MSSV:** 2A202602829
 - **Lớp:** K4-L3A
 - **Repository URL:** https://github.com/byllkoy259/K4-L3A-Day13-VuQuocBao-2A202602829-Monitoring-LLMOps
-- **Commit SHA cuối:** 92b87fd (HEAD -> main, origin/main, origin/HEAD) Checkpoint 3
+- **Commit SHA cuối:** `85168ba3b7f054fa4afd46b8e8b0a861c257afaf` (Checkpoint 4)
 - **Challenge ID:** `day13-k4-l3a-monitoring-llmops-v1`
 - **Tên project Langfuse cá nhân:** `day13-k4-l3a-2a202602829`
 
@@ -29,9 +29,9 @@
 | Prompt versions | `evidence/09-prompt.png` |
 | Prompt rollback | `evidence/10a-prompt-before.png` (production = v2), `evidence/10b-prompt-after.png` (production = v1 sau rollback) |
 | Dashboard runtime | `evidence/11-dashboard.png` |
-| Incident metric | `evidence/12-incident-metric.png` |
-| Incident log | `evidence/13-incident-log.png` |
-| Incident trace | `evidence/14-incident-trace.png` |
+| Incident metric | `evidence/12-incident-metric.txt`, `evidence/12-incident-metric.json` |
+| Incident log | `evidence/13-incident-log.txt` |
+| Incident trace | `evidence/14-incident-trace.png`, `evidence/14-incident-trace.txt` |
 
 ## 3. Kết quả kỹ thuật
 
@@ -136,143 +136,124 @@
 
 ## 7. Điều tra challenge
 
-- **Challenge ID:** `day13-k4-l3a-monitoring-llmops-v1`
-- **Cohort / Affected feature:** K4 / `monitoring`
-- **Incident injected:** `rag_slow` (enabled lúc `2026-09-29T09:25:18Z` bằng `inject_incident.py`)
-- **Khoảng thời gian điều tra:** `2026-09-29T09:25:18Z` – `2026-09-29T09:25:39Z` (5 request challenge)
+- **Challenge ID:** `day13-k4-l3a-monitoring-llmops-v1` (cohort K4, feature bị ảnh hưởng: `monitoring`, `latency_threshold_ms` của challenge = 2000).
+- **Incident:** `rag_slow`, bật bằng `python scripts/inject_incident.py` lúc `2026-09-29T09:44:31Z` (16:44:31 giờ Việt Nam); workload chạy bằng `python scripts/load_test.py --challenge --concurrency 5`.
+- **Khoảng thời gian điều tra:** `2026-09-29T09:44:31Z` – `09:44:56Z`, gồm 5 request challenge (bắt đầu 09:44:40Z, kết thúc 09:44:55Z). Trước đó tôi đã chạy một lần tương tự lúc 09:25Z (5 request, cùng triệu chứng: P50 2655 ms, P95 2657 ms); toàn bộ evidence và ID bên dưới lấy từ **lần chạy 09:44Z** để thống nhất.
 
-### Bước 1 – Triệu chứng từ metrics / dashboard
+### Bước 1 – Triệu chứng từ metrics
 
-So sánh trước và sau khi bật incident (nguồn: `data/logs.jsonl`):
+So sánh với baseline bình thường của chính tôi (93 request, nguồn `data/logs.jsonl`, cùng dashboard `build_dashboard.py`; dashboard cho cửa sổ incident tạo bằng `python scripts/build_dashboard.py --end 2026-09-29T09:50`):
 
-| Metric | Normal (93 req) | Incident (5 req) | Biến đổi |
+| Metric | Bình thường | Incident (5 request) | Nhận xét |
 |---|---|---|---|
-| Latency P50 | 155 ms | 2 655 ms | **+17×** |
-| Latency P95 | 1 426 ms | 2 657 ms | **+87%** — vượt `latency_threshold_ms=2000` |
-| TTFT avg | 50 ms | 50 ms | **Không đổi** ← chìa khóa điều tra |
-| Error rate | 0% | 0% | Không đổi |
-| Retrieval success (`tool_success`) | 100% | 100% | Không đổi |
+| Latency P50 | 155 ms | 2 659 ms | tăng ~17 lần |
+| Latency P95 | 1 426 ms | 3 750 ms | vượt ngưỡng challenge 2000 ms và ngưỡng SLO/dashboard 3000 ms (với 5 mẫu, P95 bằng giá trị lớn nhất) |
+| TTFT P95 | 50 ms | 51 ms | **không đổi** |
+| Error rate | 0% | 0% | không có `request_failed` |
+| Retrieval success (`tool_success`) | 100% | 100% | request chậm nhưng không lỗi |
+| Cost trung bình / request | 0,0020 USD | 0,0023 USD | không đổi đáng kể, loại trừ `cost_spike` |
 
-> **Quan sát then chốt:** TTFT giữ nguyên 50 ms trong khi tổng latency tăng lên ~2 655 ms → delay ~2 500 ms xảy ra **trước** bước LLM, tức là trong span `retrieval`.
+**Quan sát then chốt:** total latency tăng ~2,5 s trong khi TTFT giữ ~50 ms, và không có lỗi, không tăng cost. Vậy phần chậm nằm trước bước sinh token của LLM, chứ không phải ở LLM.
 
-Evidence: `evidence/12-incident-metric.txt`
+Evidence: [12-incident-metric.txt](evidence/12-incident-metric.txt), [12-incident-metric.json](evidence/12-incident-metric.json) (snapshot `/metrics` của server sau lần chạy 09:44Z).
 
 ### Bước 2 – Log line và correlation ID liên quan
 
-Tất cả 5 request challenge đều bị ảnh hưởng (lần chạy thứ 2, `2026-09-29T09:44Z`). Lấy một request bất thường:
+Cả 5 request `monitoring` trong khoảng incident đều chậm. Lọc `response_sent` có `latency_ms` > 2000 trong `data/logs.jsonl`:
 
+| correlation_id | session | request_received (UTC) | latency_ms | ttft_ms |
+|---|---|---|---|---|
+| `req-c12a33ea` | `k4-l3a-challenge-s01` | 09:44:40.098 | 3 750 | 50 |
+| `req-22c1e190` | `k4-l3a-challenge-s05` | 09:44:44.513 | 2 659 | 50 |
+| `req-c8a95a77` | `k4-l3a-challenge-s03` | 09:44:47.182 | 2 659 | 50 |
+| `req-3ae188d6` | `k4-l3a-challenge-s02` | 09:44:49.850 | 2 659 | 50 |
+| `req-7052c66a` | `k4-l3a-challenge-s04` | 09:44:52.519 | 2 658 | 50 |
+
+Request được chọn để đi tiếp là `req-c12a33ea` (chậm nhất). Log thật (rút gọn):
+
+```text
+09:44:40.098025Z request_received  correlation_id=req-c12a33ea feature=monitoring session_id=k4-l3a-challenge-s01
+                                   message_preview="Explain why metrics traces and logs work together."
+09:44:44.504205Z response_sent     correlation_id=req-c12a33ea latency_ms=3750 ttft_ms=50 tool_name=retrieval tool_success=true
 ```
-ts: 2026-09-29T09:44:44.504205Z
-event: request_received
-correlation_id: req-c12a33ea
-feature: monitoring
-session_id: k4-l3a-challenge-s02
-message_preview: "How should an engineer investigate tail latency?"
 
-ts: 2026-09-29T09:44:44.504205Z → +3750ms
-event: response_sent
-correlation_id: req-c12a33ea
-latency_ms: 3750
-ttft_ms: 50          ← TTFT bình thường, total latency bất thường
-tool_name: retrieval
-tool_success: true   ← Không có lỗi HTTP, chỉ bị chậm
-```
+Lưu ý: `tool_success=true` và không có `request_failed`, nên đây là chậm chứ không phải lỗi; log chỉ cho biết request nào chậm và TTFT bình thường, chưa nói được span nào chậm.
 
-Danh sách đầy đủ (lần chạy thứ 2 — dùng làm evidence chính):
-
-| correlation_id | latency_ms | ttft_ms | session |
-|---|---|---|---|
-| `req-c12a33ea` | 3 750 ms | 50 ms | k4-l3a-challenge-s02 |
-| `req-22c1e190` | 2 659 ms | 50 ms | k4-l3a-challenge-s04 |
-| `req-c8a95a77` | 2 659 ms | 50 ms | k4-l3a-challenge-s01 |
-| `req-3ae188d6` | 2 659 ms | 51 ms | k4-l3a-challenge-s05 |
-| `req-7052c66a` | 2 658 ms | 50 ms | k4-l3a-challenge-s03 |
-
-Tất cả đều vượt `latency_threshold_ms=2000` và có `ttft_ms ≈ 50 ms` — TTFT không đổi so với baseline.
-
-Evidence: `evidence/13-incident-log.txt`
+Evidence: [13-incident-log.txt](evidence/13-incident-log.txt).
 
 ### Bước 3 – Trace ID và span gây ảnh hưởng
 
-Trace được tạo bằng Langfuse SDK trong `app/agent.py`. Mỗi request có `metadata.correlation_id` khớp với log. Span timings từ Langfuse v2 API (`/api/public/v2/observations`):
+Mở trace có `metadata.correlation_id` trùng log, trong project Langfuse cá nhân. Thời lượng span đọc bằng Langfuse API (`observations.get_many`) và khớp với ảnh waterfall:
 
-| Trace ID | correlation_id | retrieval span | llm-generate span |
-|---|---|---|---|
-| `68b1fca71c23a3874e84dcc22622ac89` | `req-c12a33ea` | **2 504 ms** | 153 ms |
-| `7903fb775eaf06294222f248bac98724` | `req-22c1e190` | **2 503 ms** | 154 ms |
-| `d4421220be84a9490748b9cb99a9cc47` | `req-c8a95a77` | **2 502 ms** | 156 ms |
-| `cdf0766455675863a2239c4e8e5be33c` | `req-3ae188d6` | **2 502 ms** | 156 ms |
-| `6f5aca2e1b00d74315e62ca017c3728f` | `req-7052c66a` | **2 506 ms** | 151 ms |
+| Trace ID | correlation_id | root | retrieval | llm-generate |
+|---|---|---|---|---|
+| `68b1fca71c23a3874e84dcc22622ac89` | `req-c12a33ea` | 3 754 ms | **2 504 ms** | 153 ms |
+| `7903fb775eaf06294222f248bac98724` | `req-22c1e190` | 2 659 ms | **2 503 ms** | 154 ms |
+| `d4421220be84a9490748b9cb99a9cc47` | `req-c8a95a77` | 2 659 ms | **2 502 ms** | 156 ms |
+| `cdf0766455675863a2239c4e8e5be33c` | `req-3ae188d6` | 2 660 ms | **2 502 ms** | 156 ms |
+| `6f5aca2e1b00d74315e62ca017c3728f` | `req-7052c66a` | 2 659 ms | **2 506 ms** | 151 ms |
 
-So sánh với pre-incident traces (cùng server):
+Trace bình thường để so sánh (trước incident, cùng server): `68f69b16982134f64583a94dcd350438` (retrieval ≈ 0 ms, llm-generate 157 ms) và `2dc3bc6fa6ab66c1a7847f16da97abf2` (retrieval 4 ms, llm-generate 154 ms).
 
-| Trace ID | retrieval span | llm-generate span |
-|---|---|---|
-| `68f69b16982134f64583a94dcd350438` | **0 ms** | 157 ms |
-| `2dc3bc6fa6ab66c1a7847f16da97abf2` | **4 ms** | 154 ms |
+**Span thủ phạm là `retrieval`:** từ ~0–4 ms lên ~2 503 ms; span `llm-generate` không đổi (~154 ms).
 
-> **Span `retrieval` tăng 834× (từ ~3 ms lên 2 503 ms). Span `llm-generate` không đổi (~154 ms).** → Span `retrieval` là span thủ phạm 100%.
+Với request đầu tiên (`req-c12a33ea`), tổng 3 754 ms vẫn lớn hơn retrieval + llm-generate (2 504 + 153 = 2 657 ms). Khoảng **~1,1 s** còn lại nằm giữa lúc `retrieval` kết thúc và `llm-generate` bắt đầu (ở 4 trace còn lại khoảng này bằng ~0). Trong `LabAgent.run`, giữa hai bước đó chỉ có `resolve_prompt` (lấy prompt từ Langfuse), và đây là request đầu sau khi khởi động lại server nên cache prompt còn lạnh. Đây là suy luận từ mã nguồn và timeline, tôi chưa đo riêng span cho bước lấy prompt. Khoảng này không liên quan tới `rag_slow`.
 
-Để xem trace waterfall: Langfuse → project `day13-k4-l3a-2A202602829` → trace `68b1fca71c23a3874e84dcc22622ac89` → filter metadata `correlation_id = req-c12a33ea`.
-
-Evidence: `evidence/14-incident-trace.txt` *(chụp ảnh waterfall từ Langfuse UI và lưu vào `evidence/14-incident-trace.png`)*
+Evidence: [14-incident-trace.png](evidence/14-incident-trace.png) (waterfall của trace `68b1fca7…` với `req-c12a33ea`) và [14-incident-trace.txt](evidence/14-incident-trace.txt).
 
 ### Bước 4 – Root cause
 
-**Root cause:** Span `retrieval` trong `mock_rag.retrieve()` bị thêm `time.sleep(2.5)` khi flag `STATE["rag_slow"] == True`. Điều này mô phỏng vector store bị quá tải / timeout. Vì bước retrieval block toàn bộ luồng đồng bộ, mỗi request feature `monitoring` phải chờ thêm 2 500 ms trước khi gọi LLM.
+`mock_rag.retrieve()` gọi `time.sleep(2.5)` khi cờ `STATE["rag_slow"]` bật (mô phỏng vector store chậm/quá tải). Mọi request có bước retrieval nên đều bị cộng ~2,5 s ở span `retrieval`, trước khi gọi LLM. Ba tín hiệu cùng chỉ về một hướng: metric (P50 tăng, TTFT không đổi, không lỗi, cost không đổi) → log (`req-c12a33ea` chậm, `ttft_ms=50`) → trace (span `retrieval` 2,5 s, `llm-generate` 0,15 s).
 
-Bằng chứng phân tách: TTFT = 50 ms (unchanged) chứng minh LLM không bị ảnh hưởng; delay hoàn toàn nằm trong span `retrieval`.
+Quan sát thêm ở lần chạy 09:25Z: `load_test.py` (concurrency 5) in ra độ trễ phía client 2,7 s đến 13,3 s, trong khi log phía server chỉ ghi ~2,65 s mỗi request. Nguyên nhân là handler `chat` khai báo `async def` nhưng gọi mã đồng bộ chặn (`time.sleep`, fake LLM), nên các request xếp hàng tuần tự. Vì vậy tác động thực tế của một dependency chậm lên người dùng còn nặng hơn số `latency_ms` trong log.
 
 ### Bước 5 – Fix action và preventive measure
 
-- **Fix action tức thì:**
-  1. Disable incident: `POST /incidents/rag_slow/disable` (hoặc `python scripts/inject_incident.py --disable`)
-  2. Trong production: restart hoặc scale vector store pod; xả connection pool của retrieval client.
+**Fix action:**
+1. Tắt incident: `python scripts/inject_incident.py --disable` (hoặc `POST /incidents/rag_slow/disable`), rồi chạy lại `load_test.py` xác nhận P50 về ~150 ms. (Trạng thái incident chỉ nằm trong bộ nhớ của server; server hiện đã dừng.)
+2. Trong hệ thống thật: kiểm tra/khôi phục vector store, làm mới connection pool của client retrieval; trong lúc chờ, trả câu trả lời fallback không dùng context.
 
-- **Preventive measure:**
-  1. Thêm timeout/circuit breaker cho retrieval span (ví dụ ≤ 1 000 ms); nếu vượt timeout, trả fallback docs thay vì chờ.
-  2. Tách alert riêng cho retrieval latency (`retrieval_span_p95 > 500 ms for 2 min`) để phân biệt với LLM slowness.
-  3. Monitor span `retrieval` trên Langfuse độc lập với end-to-end latency — khi P95 retrieval tăng nhưng TTFT không đổi, ngay lập tức nghi vector store.
-  4. Health check định kỳ ping vector store; đưa kết quả vào `/health` endpoint.
+**Preventive measure:**
+1. Đặt timeout cho retrieval (ví dụ ≤ 1 s) kèm circuit breaker; quá timeout thì dùng fallback docs thay vì chờ.
+2. Thêm alert theo span: P95 của span `retrieval` vượt ngưỡng trong 2 phút, để phân biệt với LLM chậm.
+3. Khoảng hở của alert hiện tại (đề xuất, **chưa áp dụng** vào `config/alert_rules.yaml`): `high_latency_p95` dùng ngưỡng 3000 ms nên không kích hoạt với lần chạy 09:25Z (P95 2657 ms), dù ngưỡng của challenge là 2000 ms và P50 đã tăng ~17 lần. Nên hạ ngưỡng hoặc thêm điều kiện theo P50 hoặc so với baseline.
+4. Chuyển handler sang `def` (chạy trong threadpool) hoặc gọi retrieval/LLM bất đồng bộ để một dependency chậm không chặn các request khác.
+5. Đưa TTFT và thời lượng theo span lên dashboard, giữ cache prompt ấm khi khởi động (warm-up) để tránh ~1 s cold start ở request đầu.
 
 ## 8. Giải thích và tự đánh giá
 
-- **Một quyết định kỹ thuật quan trọng và lý do:**
-  Đặt `scrub_event` processor vào chuỗi structlog **trước** `JsonlFileProcessor` và `JSONRenderer` thay vì gọi `scrub_text` thủ công trong từng log call. Lý do: xử lý tập trung tại một chỗ đảm bảo không bỏ sót field nào (kể cả `detail` của exception hay các field lồng nhau trong `payload`), và không cần sửa mỗi lần thêm field log mới. Nếu đặt sau renderer thì PII đã nằm trong chuỗi JSON rồi, việc regex trên chuỗi đã serialize rất dễ bỏ sót (ví dụ ký tự escape).
+- **Một quyết định kỹ thuật quan trọng và lý do:** đặt `scrub_event` vào chuỗi processor của structlog **trước** `JsonlFileProcessor` và `JSONRenderer`, thay vì gọi `scrub_text` thủ công ở từng lệnh log. Xử lý tập trung một chỗ thì không bỏ sót field nào (kể cả `detail` của exception hay dữ liệu lồng trong `payload`) và không cần sửa khi thêm field log mới. Nếu scrub sau khi render thì PII đã nằm trong chuỗi JSON, regex trên chuỗi đã serialize dễ sót hơn. Tôi cũng chủ động loại `ts`, `level`, `correlation_id`, `user_id_hash` khỏi bước scrub (`_SCRUB_SKIP_KEYS` trong [app/logging_config.py](../app/logging_config.py)), vì hash 12 ký tự có xác suất khoảng 0,35% toàn chữ số và sẽ bị nhầm là CCCD.
 
-- **Một lỗi/blocker đã gặp:**
-  CCCD pattern ban đầu bắt được cả `user_id_hash` 12 chữ số (SHA-256 cắt ngắn) vì hash có thể toàn chữ số. Validator báo PII leak trên chính field `correlation_id` và `user_id_hash`.
+- **Một lỗi/blocker đã gặp:** khi lấy evidence prompt rollback, trace ghi **sai version**. Sau `promote 2`, request tiếp theo vẫn hiện prompt v1; sau rollback về v1, request kế lại hiện v2. Các lần chạy đầu còn có label `baseline`/`candidate` không đổi được (trace vẫn ghi `production`), và một server khác đang chiếm cổng 8000 nên server mới không bind được, request đi nhầm vào server có sẵn.
 
-- **Cách tìm nguyên nhân và xử lý:**
-  Thêm `print` tạm vào `scrub_event` để in ra field nào đang bị match, phát hiện `user_id_hash` bị nhầm là CCCD. Fix bằng cách thêm danh sách `SKIP_FIELDS = {"ts", "level", "correlation_id", "user_id_hash"}` vào `scrub_event` — các field do app tự sinh (không từ user input) được bỏ qua khi scan PII.
+- **Cách tìm nguyên nhân và xử lý:** đọc lại trace qua Langfuse API (`observations.get_many`; API trace cũ trả 410 với project mới) để so `prompt_label`/`prompt_version` trên từng trace với label lúc gửi request. Nguyên nhân: (1) `resolve_prompt` cache prompt 60 giây (`cache_ttl_seconds=60`, stale-while-revalidate) nên request ngay sau khi đổi label có thể nhận bản cache cũ; (2) request thực tế đi vào server đang chạy sẵn trên cổng 8000 (dùng label `production` từ `.env`), vì server mới của tôi không bind được cổng đó, nên các lần chạy `baseline`/`candidate` đầu đều ghi `production`. Cách xử lý: chạy server mới trên cổng riêng (8011) cho mỗi bước, mỗi bước dùng file env tạm chỉ khác label (`--env-file`), đợi trace được gửi lên trước khi tắt server, rồi kiểm tra lại từng trace ID bằng API (bảng ở mục 5).
 
-- **Cách hiểu luồng Metrics → Logs → Traces:**
-  Ba tín hiệu bổ sung cho nhau theo thứ tự điều tra:
-  1. **Metrics** (dashboard `/metrics` hoặc `logs.jsonl`) cho biết *triệu chứng* và *khoảng thời gian*: P95 latency tăng đột biến từ 1 426 ms lên 3 750 ms sau 09:25:18Z.
-  2. **Logs** (structured JSONL) cho biết *request nào* bị ảnh hưởng: filter theo `latency_ms > 2000` ra 5 `correlation_id`. Log cũng tiết lộ `ttft_ms = 50` không đổi — tín hiệu chỉ hướng vào retrieval, không phải LLM.
-  3. **Traces** (Langfuse) cho biết *bước nào* là thủ phạm: mở trace `68b1fca7...` thấy span `retrieval` dài 2 504 ms, span `llm-generate` chỉ 153 ms. Không có traces thì chỉ biết request chậm, không biết chậm ở đâu trong pipeline.
+- **Cách hiểu luồng Metrics → Logs → Traces:** ba tín hiệu trả lời ba câu hỏi khác nhau:
+  1. **Metrics** cho biết *có vấn đề và từ khi nào*: P50 tăng từ 155 ms lên 2 659 ms, P95 lên 3 750 ms sau 09:44:31Z, trong khi TTFT, error rate và cost không đổi.
+  2. **Logs** cho biết *request nào*: lọc `latency_ms` cao được 5 `correlation_id`; `ttft_ms=50` không đổi cho thấy LLM không phải nguyên nhân.
+  3. **Traces** cho biết *bước nào*: mở trace `68b1fca7…` (`req-c12a33ea`) thấy span `retrieval` 2 504 ms, `llm-generate` 153 ms. Chỉ có metric và log thì biết request chậm nhưng không biết chậm ở đâu.
 
 - **Vai trò của prompt version, token/cost, SLO và rollback trong vận hành LLM:**
-  - **Prompt version**: cách duy nhất để thay đổi hành vi LLM có thể kiểm soát được (audit trail, rollback). Thay đổi prompt mà không có version control giống deploy code không có git.
-  - **Token/cost**: chi phí tỉ lệ thuận với output token; `cost_spike` incident tăng token 4× dẫn đến cost tăng 4×. Monitoring cost/request phát hiện model hallucinate output dài bất thường.
-  - **SLO + error budget**: định lượng được "bao nhiêu sự cố là chấp nhận được" thay vì target "không bao giờ chậm". Với `rag_slow`, 5/10 request vượt 3 000 ms = burn rate 5× → alert sẽ bắn sau 5 phút.
-  - **Rollback**: khi `production` label được promote sang v2 và quality giảm, `promote 1` quay lại v2 trong vài giây mà không cần deploy lại code — điều không thể làm nếu prompt hard-code.
+  - **Prompt version:** thay đổi hành vi LLM có kiểm soát, truy vết được: mỗi generation gắn với đúng name/version/label. Sửa prompt mà không có version thì giống deploy code không có git.
+  - **Token/cost:** chi phí phụ thuộc chủ yếu vào output token; `cost_spike` nhân output token lên 4 lần và cost trung bình tăng theo. Theo dõi cost/request phát hiện sớm câu trả lời dài bất thường hoặc thay đổi prompt tốn kém. Trong incident `rag_slow`, cost không đổi, giúp loại trừ giả thuyết này.
+  - **SLO và error budget:** SLO 99% request ≤ 3000 ms cho error budget 1%. Ở lần chạy 09:44Z chỉ 1/5 request (3 750 ms) vượt 3000 ms, còn cả 5 đều vượt ngưỡng 2000 ms của challenge. Bài học là chọn ngưỡng SLO và ngưỡng alert cần so với baseline thật, nếu ngưỡng quá rộng thì sự cố như `rag_slow` lọt qua.
+  - **Rollback:** đổi label `production` về version cũ chỉ mất vài giây, không cần deploy lại code, và trace chứng minh version thực sự đổi. Nhưng cache prompt làm việc này không tức thì: sau khi rollback vẫn phải chờ cache hết hạn hoặc làm mới.
 
-- **Điều quan trọng nhất đã học:**
-  TTFT (Time To First Token) là tín hiệu phân tách cực kỳ hữu ích: nếu TTFT bình thường mà total latency tăng → vấn đề nằm ở retrieval/preprocessing. Nếu cả TTFT lẫn total latency đều tăng → vấn đề ở LLM inference. Không có TTFT thì hai trường hợp này trông giống hệt nhau trên dashboard end-to-end.
+- **Điều quan trọng nhất đã học:** TTFT là tín hiệu phân tách hữu ích: TTFT bình thường mà tổng latency tăng thì nghi phần trước LLM (retrieval, tiền xử lý); TTFT tăng theo thì nghi bản thân LLM. Nhưng TTFT chưa đủ, phải có trace theo span để chỉ ra chính xác bước nào (ví dụ ~1,1 s cold start ở request đầu không thuộc retrieval hay LLM).
 
 - **Hạn chế hoặc phần chưa hoàn thành:**
-  - Dashboard là HTML tĩnh (`build_dashboard.py`), không real-time; phải chạy lại script mỗi lần muốn refresh dữ liệu mới. Không tích hợp được auto-alert thật (Slack webhook chưa cấu hình).
-  - Chưa có rule PII cho địa chỉ nhà và tên người (NLP-based, phức tạp hơn regex).
-  - `validate_logs.py` chỉ chấm điểm, không tự động fix log cũ; phải xóa/đổi tên file log trước khi đo lại — dễ quên dẫn đến điểm thấp hơn thực tế.
+  - Dashboard là HTML tĩnh sinh từ log (`build_dashboard.py`), phải chạy lại để cập nhật; Slack chưa cấu hình thật nên alert mới là định nghĩa YAML và runbook.
+  - Các panel Cost và Tokens vẽ theo phút trong khi threshold áp dụng cho tổng, nên cột khá nhỏ so với đường threshold.
+  - Chưa có rule PII cho địa chỉ và tên người; `message_preview` bị cắt 80 ký tự.
+  - Chưa đo riêng thời gian bước `resolve_prompt` nên nhận định về ~1,1 s cold start là suy luận.
+  - Chưa áp dụng các đề xuất preventive (timeout retrieval, alert theo span, hạ ngưỡng alert) vào code và config.
 
 ## 9. Checklist trước khi nộp
 
-- [x] Kết quả và evidence thuộc commit SHA cuối (`92b87fd`).
-- [x] Tất cả ảnh/output mở được bằng đường dẫn tương đối (`evidence/xx-*.png` / `.txt`).
-- [x] Incident evidence nối đúng metric → log → trace: `12-incident-metric.txt` → `13-incident-log.txt` → `14-incident-trace.png` cùng `correlation_id = req-c12a33ea`.
-- [x] Trace/prompt evidence thuộc project Langfuse cá nhân `day13-k4-l3a-2a202602829`; ảnh không lộ key/secret.
-- [x] Repository cài đặt và chạy lại được theo README (`uvicorn app.main:app --reload --env-file .env`).
-- [x] Không có secret, API key, PII thô hoặc evidence của người khác/lớp khác (`.env` trong `.gitignore`, `config/challenge.json` trong `.gitignore`).
-- [x] URL repo và commit SHA cuối đã được nộp trên LMS/Codelabs.
-
+- [x] Kết quả và evidence thuộc commit Checkpoint 4 (`85168ba3b7f054fa4afd46b8e8b0a861c257afaf`). Commit hoàn tất bài (ví dụ "Hoan thanh lab day13") chỉ gồm phần chỉnh sửa REPORT.
+- [x] Tất cả ảnh/output dẫn trong report mở được bằng đường dẫn tương đối (đã kiểm tra tồn tại `evidence/01`–`14`).
+- [x] Incident evidence nối metric → log → trace cùng `correlation_id = req-c12a33ea`: `12-incident-metric.txt` → `13-incident-log.txt` → `14-incident-trace.png`.
+- [x] Trace/prompt evidence thuộc project Langfuse cá nhân `day13-k4-l3a-2a202602829`; ảnh `08` đã che public key, không có API key/secret.
+- [x] Repository chạy lại được theo README (`uvicorn app.main:app --env-file .env`); pytest 30 passed, `validate_logs.py` 100/100, `validate_dashboard.py` 6/6.
+- [x] Không có `.env`, key hay PII thô; `config/challenge.json` nằm trong `.gitignore` và không được commit.
+- [x] URL repo và commit SHA cuối đã được nộp trên LMS/Codelabs (đánh dấu sau khi thật sự nộp).

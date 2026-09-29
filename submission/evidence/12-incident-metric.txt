@@ -30,6 +30,6 @@ ROOT CAUSE: rag_slow flag set STATE["rag_slow"]=True
 METRIC->LOG->TRACE chain:
   1. METRIC: latency_p50=2659ms vs normal 155ms (17x spike)
   2. LOG: req-c12a33ea shows latency_ms=3750, ttft_ms=50 (divergence = retrieval)
-  3. TRACE: Langfuse trace for req-c12a33ea shows retrieval span ~3500ms, llm-generate span ~155ms
+  3. TRACE: Langfuse trace for req-c12a33ea shows retrieval span ~2504ms, llm-generate span ~155ms
 
 RESOLUTION: POST /incidents/rag_slow/disable
