@@ -4,13 +4,13 @@
 
 ## 1. Thông tin học viên
 
-- **Họ và tên:**
-- **MSSV:**
+- **Họ và tên:** Vũ Quốc Bảo
+- **MSSV:** 2A202602829
 - **Lớp:** K4-L3A
-- **Repository URL:**
+- **Repository URL:** https://github.com/byllkoy259/K4-L3A-Day13-VuQuocBao-2A202602829-Monitoring-LLMOps
 - **Commit SHA cuối:**
 - **Challenge ID:**
-- **Tên project Langfuse cá nhân:** `day13-k4-l3a-<MSSV>`
+- **Tên project Langfuse cá nhân:** `day13-k4-l3a-2a202602829`
 
 ## 2. Evidence index
 
@@ -37,13 +37,40 @@
 
 | Nội dung | Baseline | Kết quả cuối | Nhận xét |
 |---|---|---|---|
-| `validate_logs.py` | | | |
-| `validate_dashboard.py` | | | |
-| `pytest` | | | |
+| `validate_logs.py` | 30/100 (21 record; 20 thiếu field bắt buộc; 20 thiếu enrichment; 0 correlation ID) | | Đúng như dự kiến fail do chưa làm TODO CP1 |
+| `validate_dashboard.py` | HỢP LỆ: 6/6 panel | | Chỉ kiểm tra contract trong `config/dashboard.yaml`, chưa chứng minh dashboard runtime |
+| `pytest` | 22 passed in 2.26s | | Public tests đã pass ở baseline |
 | Số traces hợp lệ | | | |
-| Số PII leak | | | |
-| Latency P95 / TTFT P95 | | | |
+| Số PII leak | 0 (validator) | | Xem ghi chú CP0 bên dưới |
+| Latency P95 / TTFT P95 | Chưa tính từ log (chỉ có 10 request mẫu: 1 request 1665.1 ms, 9 request còn lại 390.2–521.5 ms) | | Request đầu chậm nhất, nghi do khởi động nguội |
 | Retrieval success rate | | | |
+
+### Baseline CP0
+
+**Môi trường:** Windows, Python 3.11.9, virtualenv `.venv`, chạy API bằng `uvicorn`, workload bằng `python scripts/load_test.py` (10 request, feature `qa` và `summary`).
+
+**Kết quả load test:** cả 10 request trả HTTP 200. Cột correlation ID in ra `MISSING` ở cả 10 request, vì `app/middleware.py` còn hard-code `correlation_id = "MISSING"`.
+
+**Kết quả `validate_logs.py`:**
+
+| Tiêu chí | Kết quả |
+|---|---|
+| Required fields (`ts`, `level`, ...) | FAILED (20/21 record thiếu) |
+| Correlation ID propagation | FAILED (0 unique ID, cần ≥ 2) |
+| Log enrichment (`user_id_hash`, ...) | FAILED (20/21 record thiếu) |
+| PII scrubbing | PASSED (0 leak) |
+| **Điểm ước tính** | **30/100** |
+
+**Nguyên nhân (đối chiếu source):**
+- Correlation ID: `middleware.py` chưa xóa contextvars, chưa đọc/sinh `x-request-id`, chưa bind ID, chưa trả header.
+- Enrichment: `main.py` chưa `bind_contextvars(user_id_hash, session_id, feature, model, env)`.
+- PII: `logging_config.py` chưa đăng ký `scrub_event`. Kết quả 0 leak chưa đáng tin, vì workload mẫu có thể không chứa PII. Cần kiểm tra lại bằng input có PII giả ở CP1.
+
+**Kết quả `validate_dashboard.py` và `pytest`:** dashboard 6/6 panel hợp lệ; 22 test pass.
+
+**Bước tiếp theo:** làm các TODO CP1, xóa hoặc đổi tên `data/logs.jsonl` cũ trước khi đo lại để log chưa scrub không bị tính.
+
+**Evidence baseline:** lưu output terminal của bốn lệnh trên (dạng `.txt` hoặc ảnh) vào `submission/evidence/` với tên `00-baseline-*` để phân biệt với evidence cuối.
 
 ## 4. Logging và PII
 
